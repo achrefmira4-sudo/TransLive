@@ -169,6 +169,7 @@ def test_spec_syntax() -> None:
     check("disables UPX (protects speech DLLs)", "upx=False" in src)
     check("windowed app (console=False)", "console=False" in src)
     check("uses icon", "icon=icon" in src)
+    check("bundles icon.ico for tray icon", "datas.append((icon_path" in src)
 
 
 def test_spec_paths() -> None:
@@ -277,6 +278,7 @@ def test_selftest_wiring() -> None:
     src = open(st, encoding="utf-8").read()
     check("selftest writes a log (windowed exe has no console)",
           "selftest.log" in src)
+    check("selftest checks tray module", '"app.tray"' in src)
     check("selftest runs real VAD inference", "get_speech_timestamps" in src)
     check("selftest uses VadOptions, not a dict", "VadOptions(" in src)
 

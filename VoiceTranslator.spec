@@ -105,6 +105,8 @@ for root, _dirs, files in os.walk(os.path.join(HERE, "app")):
 
 icon_path = os.path.join(HERE, "icon.ico")
 icon = icon_path if os.path.exists(icon_path) else None
+if icon:
+    datas.append((icon_path, "."))
 
 version_file = os.path.join(HERE, "version_info.txt")
 version = version_file if (os.path.exists(version_file) and sys.platform == "win32") else None
