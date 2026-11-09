@@ -1,0 +1,121 @@
+name: Build Windows EXE
+
+# Builds VoiceTranslator.exe on a real Windows machine.
+# Run it from the Actions tab ("Run workflow"), or push a tag like v1.0.0
+# to also attach the zip to a GitHub Release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python (64-bit)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+
+      - name: Show environment
+        run: |
+          python -c "import struct, sys; print(sys.version); print('bits:', struct.calcsize('P')*8)"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" pillow
+
+      - name: Generate icon
+        run: python tools/make_icon.py
+
+      - name: Run headless tests
+        run: |
+          python tests/test_core.py
+          python tests/test_gui_smoke.py
+          python tests/test_lifecycle.py
+          python tests/test_fixes.py
+          python tests/test_startup_race.py
+          python tests/test_build_spec.py
+
+      # These need a real display. On a Windows runner there is one, so the
+      # layout is measured with the actual Tk packer -- the only way to catch
+      # a Start button starved to height=1 by pack order.
+      - name: Run real-window layout tests
+        run: |
+          python tests/test_source_warning.py
+          python tests/test_settings_scroll.py
+
+      - name: Build executable
+        run: pyinstaller --noconfirm --clean VoiceTranslator.spec
+
+      - name: Verify the exe exists
+        shell: pwsh
+        run: |
+          $exe = "dist/VoiceTranslator/VoiceTranslator.exe"
+          if (-not (Test-Path $exe)) { Write-Error "exe missing"; exit 1 }
+          $mb = [math]::Round((Get-ChildItem dist/VoiceTranslator -Recurse |
+                 Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+          Write-Host "Built $exe - folder size $mb MB"
+
+      - name: Confirm the VAD model asset was bundled
+        shell: pwsh
+        run: |
+          # Without this asset the packaged app crashes on first speech.
+          $vad = Get-ChildItem dist/VoiceTranslator -Recurse -Filter "*silero_vad*.onnx"
+          if (-not $vad) { Write-Error "silero VAD asset missing from bundle"; exit 1 }
+          Write-Host "VAD asset present: $($vad.FullName)"
+
+      - name: Self-test the packaged exe
+        shell: pwsh
+        run: |
+          # Runs the real .exe headlessly: proves imports, native DLLs and the
+          # bundled VAD model all work after packaging, and lists audio devices.
+          $p = Start-Process -FilePath "dist/VoiceTranslator/VoiceTranslator.exe" `
+               -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow
+          $log = "$env:APPDATA/VoiceTranslator/selftest.log"
+          if (Test-Path $log) { Get-Content $log } else { Write-Host "no log produced" }
+          # Exit code 1 only for real breakage; no audio device on a CI runner is
+          # expected, so tolerate that single case.
+          if ($p.ExitCode -ne 0) {
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern "no 'What you hear' audio source" -Quiet)) {
+              Write-Host "Only failure is the CI runner having no audio device - acceptable."
+            } else {
+              Write-Error "packaged self-test failed with exit code $($p.ExitCode)"
+              exit 1
+            }
+          }
+
+      - name: Add readme and self-test runner to output
+        shell: pwsh
+        run: |
+          Copy-Item README.md dist/VoiceTranslator/README.md
+          Copy-Item BUILD_EXE.md dist/VoiceTranslator/BUILD_EXE.md
+          Copy-Item selftest.bat dist/VoiceTranslator/selftest.bat
+
+      - name: Zip the app
+        shell: pwsh
+        run: Compress-Archive -Path dist/VoiceTranslator -DestinationPath VoiceTranslator-Windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceTranslator-Windows
+          path: VoiceTranslator-Windows.zip
+          retention-days: 30
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VoiceTranslator-Windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
