@@ -184,7 +184,7 @@ class AudioCapture:
                 rate=self.device.rate,
                 input=True,
                 input_device_index=self.device.index,
-                frames_per_buffer=1024,
+                frames_per_buffer=512,
                 stream_callback=self._callback,
             )
             self._stream.start_stream()

@@ -27,6 +27,7 @@ DEFAULTS = {
     "overlay_geometry": "",
     "response_speed": "balanced",
     "save_transcript": True,
+    "close_to_tray": True,
     "window_geometry": "1000x820",
 }
 

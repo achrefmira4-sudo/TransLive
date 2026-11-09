@@ -100,7 +100,8 @@ def run() -> int:
 
     say("\n--- App modules ---")
     for mod in ("app.audio", "app.vad", "app.translator", "app.pipeline",
-                "app.overlay", "app.speech", "app.languages", "app.config"):
+                "app.overlay", "app.speech", "app.tray", "app.languages",
+                "app.config"):
         try:
             __import__(mod)
             say(f"{OK} {mod}")

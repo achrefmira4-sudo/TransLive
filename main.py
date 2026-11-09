@@ -17,13 +17,14 @@ from tkinter import filedialog, messagebox, ttk
 
 from app.audio import HAS_PYAUDIO, Device, list_devices
 from app.config import APP_TITLE, Config, transcript_dir
+from app.languages import (
+    choice_from_code, code_from_choice, name_of, ui_choices,
+)
 from app.overlay import SubtitleOverlay
 from app.pipeline import Event, Pipeline
 from app.speech import Speaker
 from app.translator import HAS_WHISPER, MODEL_NOTES, MODEL_SIZES, Translator
-from app.languages import (
-    choice_from_code, code_from_choice, name_of, ui_choices,
-)
+from app.tray import TrayIcon
 
 BG = "#15161A"
 PANEL = "#1E2027"
@@ -40,6 +41,7 @@ class App:
         self.root = root
         self.cfg = Config()
         self.events: "queue.Queue[Event]" = queue.Queue(maxsize=512)
+        self._ui_actions: "queue.Queue[str]" = queue.Queue()
         self.devices: list[Device] = []
         self.pipeline: Pipeline | None = None
         self.translator: Translator | None = None
@@ -50,13 +52,25 @@ class App:
         # Shutdown runs on a worker thread; these prevent a fast Stop->Start
         # from orphaning a live pipeline (see stop()/_stop_worker).
         self._stopping = False
+        self._quitting = False
         self._session_id = 0
         self._stop_thread: threading.Thread | None = None
+        self.window_hidden = False
+        self._tray_notified = False
+        self._last_window_geometry = str(self.cfg.get("window_geometry") or "1000x820")
 
         root.title(APP_TITLE)
-        root.geometry(self.cfg.get("window_geometry"))
+        root.geometry(self._last_window_geometry)
         root.minsize(820, 600)
         root.configure(bg=BG)
+
+        self.tray = TrayIcon(
+            title="Voice Translator",
+            on_show=lambda: self._enqueue_tray_action("show"),
+            on_stop=lambda: self._enqueue_tray_action("stop"),
+            on_quit=lambda: self._enqueue_tray_action("quit"),
+            is_translating=self.is_translating,
+        )
 
         self._build_styles()
         self._build_ui()
@@ -70,10 +84,40 @@ class App:
             geometry=self.cfg.get("overlay_geometry"),
         )
 
+        if not type(root).__module__.startswith("unittest.mock"):
+            self.tray.start()
+            self.tray.set_status("Idle")
+            try:
+                self.root.bind("<Destroy>", self._on_root_destroy, add="+")
+            except Exception:
+                pass
+
         self.refresh_devices()
         self._check_environment()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.after(80, self._drain_events)
+        self.root.after(40, self._drain_events)
+
+    def _on_root_destroy(self, event=None) -> None:
+        if event is None or getattr(event, "widget", None) is self.root:
+            self.tray.stop()
+
+    def is_translating(self) -> bool:
+        return bool(self.pipeline is not None and self.pipeline.running
+                    and not self._stopping)
+
+    def _enqueue_tray_action(self, action: str) -> None:
+        try:
+            self._ui_actions.put_nowait(action)
+        except Exception:
+            pass
+
+    def handle_tray_action(self, action: str) -> None:
+        if action == "show":
+            self.show_window()
+        elif action == "stop":
+            self.stop()
+        elif action == "quit":
+            self.quit_app()
 
     # ---------------- UI ----------------
     def _build_styles(self) -> None:
@@ -160,6 +204,13 @@ class App:
             font=("Segoe UI", 10), relief="flat", padx=16, pady=10,
             cursor="hand2", bd=0,
         ).pack(side="left")
+        self.quit_btn = tk.Button(
+            bar, text="Quit", command=self.quit_app,
+            bg=PANEL, fg=FG, activebackground="#2A2D36", activeforeground=FG,
+            font=("Segoe UI", 10), relief="flat", padx=14, pady=10,
+            cursor="hand2", bd=0,
+        )
+        self.quit_btn.pack(side="left", padx=(8, 0))
         self.level = ttk.Progressbar(bar, maximum=100, length=160,
                                      style="Horizontal.TProgressbar")
         self.level.pack(side="right", pady=10)
@@ -312,6 +363,7 @@ class App:
         self.overlay_var = tk.BooleanVar(value=self.cfg.get("show_overlay"))
         self.click_var = tk.BooleanVar(value=self.cfg.get("overlay_click_through"))
         self.save_var = tk.BooleanVar(value=self.cfg.get("save_transcript"))
+        self.close_to_tray_var = tk.BooleanVar(value=self.cfg.get("close_to_tray"))
 
         checks = [
             ("Also show the original language text (doubles CPU cost)",
@@ -321,6 +373,8 @@ class App:
             ("Show floating subtitle overlay", self.overlay_var),
             ("Overlay is click-through (double-click it to toggle)", self.click_var),
             ("Auto-save transcripts to a file", self.save_var),
+            ("Keep running in the notification area when window is closed",
+             self.close_to_tray_var),
         ]
         for text, var in checks:
             r += 1
@@ -385,6 +439,12 @@ class App:
             ("", "4. English subtitles appear in the window and in the floating "
                  "overlay. Drag the overlay anywhere; double-click it to make it "
                  "click-through so it never blocks your game or app."),
+            ("h", "Background operation (notification area)"),
+            ("", "Closing the main window hides it to the Windows notification "
+                 "area (system tray) while translation and floating subtitles "
+                 "keep running in the background. Click the tray icon to show "
+                 "the window again, or right-click it to Show, Stop translating, "
+                 "or Quit."),
             ("h", "Important: use headphones for spoken translation"),
             ("", "If you enable \"Speak the English translation out loud\" while "
                  "capturing [What you hear], use headphones. Otherwise the app "
@@ -519,6 +579,8 @@ class App:
     def set_status(self, text: str, color: str = MUTED) -> None:
         self.status_label.configure(text=text)
         self.status_dot.itemconfigure(self._dot, fill=color)
+        if hasattr(self, "tray") and self.tray is not None:
+            self.tray.set_status(text)
 
     def _append_system(self, message: str) -> None:
         self.transcript.configure(state="normal")
@@ -695,6 +757,7 @@ class App:
         if speaker is not None:
             speaker.enabled = False
 
+        self.overlay.hide()
         self.set_status("Stopping…", MUTED)
         self.level.configure(value=0)
         self.start_btn.configure(text="Stopping…", bg=MUTED,
@@ -744,6 +807,15 @@ class App:
 
     # ---------------- event loop ----------------
     def _drain_events(self) -> None:
+        while True:
+            try:
+                action = self._ui_actions.get_nowait()
+            except queue.Empty:
+                break
+            self.handle_tray_action(action)
+            if self._quitting:
+                return
+
         try:
             while True:
                 ev = self.events.get_nowait()
@@ -767,15 +839,28 @@ class App:
                             "subtitles in sync. If this keeps happening, see "
                             "Settings → model size.")
                 elif ev.kind == "level":
-                    self.level.configure(value=min(100, ev.level * 700))
+                    lvl = max(0.0, float(ev.level) - 0.0004)
+                    pct = min(100.0, (lvl / 0.14) ** 0.55 * 100.0) if lvl > 0 else 0.0
+                    self.level.configure(value=pct)
                 elif ev.kind == "stopped":
                     self.set_status("Idle", MUTED)
                     self.level.configure(value=0)
         except queue.Empty:
             pass
-        self.root.after(80, self._drain_events)
+        if not self._quitting:
+            self.root.after(40, self._drain_events)
 
-    # ---------------- shutdown ----------------
+    # ---------------- background / tray & shutdown ----------------
+    def _current_window_geometry(self) -> str:
+        if not self.window_hidden:
+            try:
+                geo = self.root.geometry()
+                if isinstance(geo, str) and "x" in geo and not geo.startswith("1x1"):
+                    self._last_window_geometry = geo
+            except Exception:
+                pass
+        return self._last_window_geometry
+
     def _save_settings(self) -> None:
         self.cfg.update(
             model_size=self.model_var.get(),
@@ -788,20 +873,65 @@ class App:
             show_overlay=bool(self.overlay_var.get()),
             overlay_click_through=bool(self.click_var.get()),
             save_transcript=bool(self.save_var.get()),
+            close_to_tray=bool(self.close_to_tray_var.get()),
             overlay_font_size=int(self.font_var.get()),
             overlay_lines=int(self.lines_var.get()),
             overlay_fade_seconds=int(self.fade_var.get()),
             tts_rate=int(self.rate_var.get()),
             overlay_geometry=self.overlay.geometry(),
-            window_geometry=self.root.geometry(),
+            window_geometry=self._current_window_geometry(),
         )
         i = self.device_combo.current()
         if 0 <= i < len(self.devices):
             self.cfg.set("source_keyword", self.devices[i].name)
         self.cfg.save()
 
-    def on_close(self) -> None:
+    def hide_to_tray(self) -> None:
+        """Hide the main window to the notification area while staying active."""
         self._save_settings()
+        self.window_hidden = True
+        self.root.withdraw()
+        if self.is_translating() and self.overlay_var.get():
+            self.overlay.show()
+        if not self._tray_notified:
+            self._tray_notified = True
+            msg = (
+                "Still translating in the background. Right-click the tray "
+                "icon to Show, Stop, or Quit."
+                if self.is_translating()
+                else "Running in the notification area. Right-click the tray "
+                     "icon to Show or Quit."
+            )
+            self.tray.notify(APP_TITLE, msg)
+
+    def show_window(self) -> None:
+        """Restore the main window from the notification area."""
+        self.window_hidden = False
+        self.root.deiconify()
+        try:
+            self.root.state("normal")
+        except Exception:
+            pass
+        self.root.lift()
+        try:
+            self.root.focus_force()
+        except Exception:
+            pass
+        if self.is_translating() and self.overlay_var.get():
+            self.overlay.show()
+
+    def on_close(self) -> None:
+        if bool(self.close_to_tray_var.get()) and self.tray.available:
+            self.hide_to_tray()
+            return
+        self.quit_app()
+
+    def quit_app(self) -> None:
+        if self._quitting:
+            return
+        self._quitting = True
+        self._save_settings()
+        self.tray.stop()
         try:
             if self.speaker is not None:
                 self.speaker.enabled = False

@@ -102,12 +102,17 @@ doubles CPU cost. It is off by default; turn it on only if you have headroom.
 
 ---
 
-## Floating overlay
+## Floating overlay & background mode
 
-- **Drag** it anywhere.
+- **Drag** the overlay anywhere.
 - **Double-click** it to toggle click-through, so it never steals clicks from
   your game or app. Double-click again to make it draggable.
 - Font size, number of lines, and fade delay are all in **Settings**.
+- **Close to notification area:** closing the main window hides it to the
+  Windows notification area (system tray) while translation and floating
+  subtitles keep running in the background. Click the tray icon to show the
+  window again, or right-click it for **Show**, **Stop translating**, or
+  **Quit** (can be toggled in **Settings**).
 
 ---
 
@@ -236,14 +241,16 @@ which is why no separate translation service is required.
 ## Tests
 
 ```bash
-python tests/test_core.py         # segmentation, resampling, filtering (no hardware)
-python tests/test_gui_smoke.py    # GUI wiring, headless
-python tests/test_lifecycle.py    # start/stop race conditions, headless
-python tests/test_build_spec.py   # .exe recipe: bundled assets, icon, workflow
-python main.py --selftest         # speech pipeline intact (works in the .exe too)
-python tests/test_fixes.py        # regression tests for accuracy/backlog fixes
-python tests/test_integration.py  # real speech -> English (downloads tiny model)
-python tests/benchmark_models.py  # speed + accuracy per model size
+python tests/test_core.py                   # segmentation, resampling, filtering (no hardware)
+python tests/test_recognition_and_speed.py  # fast phrase-end detection, quiet speech, decoding
+python tests/test_gui_smoke.py              # GUI wiring, headless
+python tests/test_tray_background.py        # notification area Show / Stop / Quit & background mode
+python tests/test_lifecycle.py              # start/stop race conditions, headless
+python tests/test_build_spec.py             # .exe recipe: bundled assets, icon, workflow
+python main.py --selftest                   # speech pipeline intact (works in the .exe too)
+python tests/test_fixes.py                  # regression tests for accuracy/backlog fixes
+python tests/test_integration.py            # real speech -> English (downloads tiny model)
+python tests/benchmark_models.py            # speed + accuracy per model size
 ```
 
 Large audio samples are not included. To fetch them:

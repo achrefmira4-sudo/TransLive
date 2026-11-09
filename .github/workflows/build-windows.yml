@@ -40,7 +40,9 @@ jobs:
       - name: Run headless tests
         run: |
           python tests/test_core.py
+          python tests/test_recognition_and_speed.py
           python tests/test_gui_smoke.py
+          python tests/test_tray_background.py
           python tests/test_lifecycle.py
           python tests/test_fixes.py
           python tests/test_startup_race.py
